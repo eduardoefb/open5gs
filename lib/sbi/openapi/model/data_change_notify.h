@@ -23,12 +23,14 @@ struct OpenAPI_data_change_notify_s {
     OpenAPI_list_t *original_callback_reference;
     char *ue_id;
     OpenAPI_list_t *notify_items;
+    OpenAPI_list_t *del_resources;
 };
 
 OpenAPI_data_change_notify_t *OpenAPI_data_change_notify_create(
     OpenAPI_list_t *original_callback_reference,
     char *ue_id,
-    OpenAPI_list_t *notify_items
+    OpenAPI_list_t *notify_items,
+    OpenAPI_list_t *del_resources
 );
 void OpenAPI_data_change_notify_free(OpenAPI_data_change_notify_t *data_change_notify);
 OpenAPI_data_change_notify_t *OpenAPI_data_change_notify_parseFromJSON(cJSON *data_change_notifyJSON);

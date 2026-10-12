@@ -56,6 +56,13 @@ void testgmm_recv(test_ue_t *test_ue, ogs_pkbuf_t *pkbuf)
     case OGS_NAS_5GS_AUTHENTICATION_REJECT:
     case OGS_NAS_5GS_DEREGISTRATION_ACCEPT_FROM_UE:
         break;
+    case OGS_NAS_5GS_DEREGISTRATION_REQUEST_TO_UE:
+        test_ue->gmm_cause =
+            message.gmm.deregistration_request_to_ue.gmm_cause;
+        test_ue->re_registration_required = message.gmm.
+            deregistration_request_to_ue.de_registration_type.
+                re_registration_required;
+        break;
     case OGS_NAS_5GS_SECURITY_MODE_COMMAND:
         break;
     case OGS_NAS_5GS_CONFIGURATION_UPDATE_COMMAND:

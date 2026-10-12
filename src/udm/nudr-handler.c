@@ -279,6 +279,17 @@ bool udm_nudr_dr_handle_subscription_authentication(
     CASE(OGS_SBI_RESOURCE_NAME_AUTHENTICATION_STATUS)
         OpenAPI_auth_event_t *AuthEvent = NULL;
 
+        if (recvmsg->res_status == OGS_SBI_HTTP_STATUS_NOT_FOUND &&
+            udm_ue->subscription_withdrawn &&
+            udm_ue->auth_event && udm_ue->auth_event->auth_removal_ind) {
+            ogs_info("[%s] Subscription withdrawn, authentication result "
+                    "removed", udm_ue->suci);
+            OpenAPI_auth_event_free(udm_ue->auth_event);
+            udm_ue->auth_event = NULL;
+            ogs_assert(true == ogs_sbi_send_http_status_no_content(stream));
+            return true;
+        }
+
         if (recvmsg->res_status != OGS_SBI_HTTP_STATUS_NO_CONTENT) {
             strerror = ogs_msprintf("[%s] HTTP response error [%d]",
                     udm_ue->suci, recvmsg->res_status);

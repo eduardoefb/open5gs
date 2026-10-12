@@ -7,7 +7,8 @@
 OpenAPI_data_change_notify_t *OpenAPI_data_change_notify_create(
     OpenAPI_list_t *original_callback_reference,
     char *ue_id,
-    OpenAPI_list_t *notify_items
+    OpenAPI_list_t *notify_items,
+    OpenAPI_list_t *del_resources
 )
 {
     OpenAPI_data_change_notify_t *data_change_notify_local_var = ogs_malloc(sizeof(OpenAPI_data_change_notify_t));
@@ -16,6 +17,7 @@ OpenAPI_data_change_notify_t *OpenAPI_data_change_notify_create(
     data_change_notify_local_var->original_callback_reference = original_callback_reference;
     data_change_notify_local_var->ue_id = ue_id;
     data_change_notify_local_var->notify_items = notify_items;
+    data_change_notify_local_var->del_resources = del_resources;
 
     return data_change_notify_local_var;
 }
@@ -44,6 +46,13 @@ void OpenAPI_data_change_notify_free(OpenAPI_data_change_notify_t *data_change_n
         }
         OpenAPI_list_free(data_change_notify->notify_items);
         data_change_notify->notify_items = NULL;
+    }
+    if (data_change_notify->del_resources) {
+        OpenAPI_list_for_each(data_change_notify->del_resources, node) {
+            ogs_free(node->data);
+        }
+        OpenAPI_list_free(data_change_notify->del_resources);
+        data_change_notify->del_resources = NULL;
     }
     ogs_free(data_change_notify);
 }
@@ -96,6 +105,20 @@ cJSON *OpenAPI_data_change_notify_convertToJSON(OpenAPI_data_change_notify_t *da
     }
     }
 
+    if (data_change_notify->del_resources) {
+    cJSON *del_resourcesList = cJSON_AddArrayToObject(item, "delResources");
+    if (del_resourcesList == NULL) {
+        ogs_error("OpenAPI_data_change_notify_convertToJSON() failed [del_resources]");
+        goto end;
+    }
+    OpenAPI_list_for_each(data_change_notify->del_resources, node) {
+        if (cJSON_AddStringToObject(del_resourcesList, "", (char*)node->data) == NULL) {
+            ogs_error("OpenAPI_data_change_notify_convertToJSON() failed [del_resources]");
+            goto end;
+        }
+    }
+    }
+
 end:
     return item;
 }
@@ -109,6 +132,8 @@ OpenAPI_data_change_notify_t *OpenAPI_data_change_notify_parseFromJSON(cJSON *da
     cJSON *ue_id = NULL;
     cJSON *notify_items = NULL;
     OpenAPI_list_t *notify_itemsList = NULL;
+    cJSON *del_resources = NULL;
+    OpenAPI_list_t *del_resourcesList = NULL;
 
     original_callback_reference = cJSON_GetObjectItemCaseSensitive(data_change_notifyJSON, "originalCallbackReference");
     if (original_callback_reference) {
@@ -161,10 +186,30 @@ OpenAPI_data_change_notify_t *OpenAPI_data_change_notify_parseFromJSON(cJSON *da
         }
     }
 
+    del_resources = cJSON_GetObjectItemCaseSensitive(data_change_notifyJSON, "delResources");
+    if (del_resources) {
+        cJSON *del_resources_local = NULL;
+        if (!cJSON_IsArray(del_resources)) {
+            ogs_error("OpenAPI_data_change_notify_parseFromJSON() failed [del_resources]");
+            goto end;
+        }
+
+        del_resourcesList = OpenAPI_list_create();
+
+        cJSON_ArrayForEach(del_resources_local, del_resources) {
+            if (!cJSON_IsString(del_resources_local)) {
+                ogs_error("OpenAPI_data_change_notify_parseFromJSON() failed [del_resources]");
+                goto end;
+            }
+            OpenAPI_list_add(del_resourcesList, ogs_strdup(del_resources_local->valuestring));
+        }
+    }
+
     data_change_notify_local_var = OpenAPI_data_change_notify_create (
         original_callback_referenceList,
         ue_id && !cJSON_IsNull(ue_id) ? ogs_strdup(ue_id->valuestring) : NULL,
-        notify_itemsList
+        notify_itemsList,
+        del_resourcesList
     );
 
     return data_change_notify_local_var;
@@ -182,6 +227,13 @@ end:
         }
         OpenAPI_list_free(notify_itemsList);
         notify_itemsList = NULL;
+    }
+    if (del_resourcesList) {
+        OpenAPI_list_for_each(del_resourcesList, node) {
+            ogs_free(node->data);
+        }
+        OpenAPI_list_free(del_resourcesList);
+        del_resourcesList = NULL;
     }
     return NULL;
 }

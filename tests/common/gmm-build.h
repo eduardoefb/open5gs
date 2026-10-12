@@ -43,6 +43,7 @@ ogs_pkbuf_t *testgmm_build_authentication_failure(
 ogs_pkbuf_t *testgmm_build_security_mode_complete(
         test_ue_t *test_ue, ogs_pkbuf_t *nasbuf);
 ogs_pkbuf_t *testgmm_build_configuration_update_complete(test_ue_t *test_ue);
+ogs_pkbuf_t *testgmm_build_de_registration_accept(test_ue_t *test_ue);
 ogs_pkbuf_t *testgmm_build_ul_nas_transport(test_sess_t *test_sess,
         uint8_t payload_type, ogs_pkbuf_t *payload);
 ogs_pkbuf_t *testgmm_build_gmm_status(

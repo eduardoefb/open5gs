@@ -22,6 +22,10 @@
  * TS 29.503 5.2.2.3.4): the UDM subscribes to the UDR on behalf of its
  * SDM subscribers and maps each DataChangeNotify to a ModificationNotification
  * towards the AMF/SMF that subscribed to the affected data set.
+ *
+ * A DataChangeNotify with delResources means the subscription was withdrawn:
+ * the registered AMF receives a Nudm_UECM DeregistrationNotification with
+ * reason SUBSCRIPTION_WITHDRAWN (TS 23.502 4.2.2.3.3, TS 29.503 5.3.2.2.3).
  */
 
 #include "sbi-path.h"
@@ -294,41 +298,63 @@ static int modification_notify_cb(
     return OGS_OK;
 }
 
-static void send_modification_notification(
-        udm_sdm_subscription_t *sdm_subscription, OpenAPI_list_t *items)
+static ogs_sbi_client_t *callback_client(const char *uri)
 {
-    ogs_sbi_message_t message;
-    ogs_sbi_request_t *request = NULL;
     ogs_sbi_client_t *client = NULL;
-    OpenAPI_modification_notification_t ModificationNotification;
-
     OpenAPI_uri_scheme_e scheme = OpenAPI_uri_scheme_NULL;
     char *fqdn = NULL;
     uint16_t fqdn_port = 0;
     ogs_sockaddr_t *addr = NULL, *addr6 = NULL;
 
-    ogs_assert(sdm_subscription->data_change_callback_uri);
-
     if (ogs_sbi_getaddr_from_uri(&scheme, &fqdn, &fqdn_port, &addr, &addr6,
-                sdm_subscription->data_change_callback_uri) == false ||
+                (char *)uri) == false ||
             scheme == OpenAPI_uri_scheme_NULL) {
-        ogs_error("Invalid callbackReference [%s]",
-                sdm_subscription->data_change_callback_uri);
-        return;
+        ogs_error("Invalid callback URI [%s]", uri);
+        return NULL;
     }
 
     client = ogs_sbi_client_find(scheme, fqdn, fqdn_port, addr, addr6);
     if (!client)
         client = ogs_sbi_client_add(scheme, fqdn, fqdn_port, addr, addr6);
+    if (!client)
+        ogs_error("ogs_sbi_client_add() failed");
 
     ogs_free(fqdn);
     ogs_freeaddrinfo(addr);
     ogs_freeaddrinfo(addr6);
 
-    if (!client) {
-        ogs_error("ogs_sbi_client_add() failed");
+    return client;
+}
+
+static void send_to_callback(const char *uri, ogs_sbi_message_t *message,
+        ogs_sbi_client_cb_f cb)
+{
+    ogs_sbi_request_t *request = NULL;
+    ogs_sbi_client_t *client = NULL;
+
+    client = callback_client(uri);
+    if (!client)
+        return;
+
+    request = ogs_sbi_build_request(message);
+    if (!request) {
+        ogs_error("ogs_sbi_build_request() failed");
         return;
     }
+
+    if (ogs_sbi_send_request_to_client(client, cb, request, NULL) == false)
+        ogs_error("ogs_sbi_send_request_to_client() failed");
+
+    ogs_sbi_request_free(request);
+}
+
+static void send_modification_notification(
+        udm_sdm_subscription_t *sdm_subscription, OpenAPI_list_t *items)
+{
+    ogs_sbi_message_t message;
+    OpenAPI_modification_notification_t ModificationNotification;
+
+    ogs_assert(sdm_subscription->data_change_callback_uri);
 
     memset(&ModificationNotification, 0, sizeof(ModificationNotification));
     ModificationNotification.notify_items = items;
@@ -339,17 +365,59 @@ static void send_modification_notification(
     message.h.uri = sdm_subscription->data_change_callback_uri;
     message.ModificationNotification = &ModificationNotification;
 
-    request = ogs_sbi_build_request(&message);
-    if (!request) {
-        ogs_error("ogs_sbi_build_request() failed");
+    send_to_callback(sdm_subscription->data_change_callback_uri,
+            &message, modification_notify_cb);
+}
+
+static int deregistration_notify_cb(
+        int status, ogs_sbi_response_t *response, void *data)
+{
+    if (status != OGS_OK) {
+        ogs_log_message(
+                status == OGS_DONE ? OGS_LOG_DEBUG : OGS_LOG_WARN, 0,
+                "DeregistrationNotification failed [%d]", status);
+        return OGS_ERROR;
+    }
+
+    ogs_assert(response);
+
+    if (response->status >= 300)
+        ogs_warn("DeregistrationNotification failed [HTTP %d]",
+                response->status);
+
+    ogs_sbi_response_free(response);
+    return OGS_OK;
+}
+
+static void send_deregistration_notification(udm_ue_t *udm_ue)
+{
+    ogs_sbi_message_t message;
+    OpenAPI_deregistration_data_t DeregistrationData;
+
+    if (!udm_ue->dereg_callback_uri ||
+        (udm_ue->amf_3gpp_access_registration &&
+         udm_ue->amf_3gpp_access_registration->is_purge_flag &&
+         udm_ue->amf_3gpp_access_registration->purge_flag)) {
+        ogs_info("[%s] Subscription withdrawn, no AMF registered",
+                udm_ue->supi);
         return;
     }
 
-    if (ogs_sbi_send_request_to_client(
-                client, modification_notify_cb, request, NULL) == false)
-        ogs_error("ogs_sbi_send_request_to_client() failed");
+    memset(&DeregistrationData, 0, sizeof(DeregistrationData));
+    DeregistrationData.dereg_reason =
+        OpenAPI_deregistration_reason_SUBSCRIPTION_WITHDRAWN;
+    DeregistrationData.access_type = OpenAPI_access_type_3GPP_ACCESS;
 
-    ogs_sbi_request_free(request);
+    memset(&message, 0, sizeof(message));
+    message.h.method = (char *)OGS_SBI_HTTP_METHOD_POST;
+    message.h.uri = udm_ue->dereg_callback_uri;
+    message.DeregistrationData = &DeregistrationData;
+
+    ogs_info("[%s] Subscription withdrawn, deregistering [%s]",
+            udm_ue->supi, udm_ue->dereg_callback_uri);
+
+    send_to_callback(udm_ue->dereg_callback_uri,
+            &message, deregistration_notify_cb);
 }
 
 bool udm_nudm_callback_handle_data_change_notify(
@@ -374,6 +442,38 @@ bool udm_nudm_callback_handle_data_change_notify(
     }
 
     DataChangeNotify = recvmsg->DataChangeNotify;
+    supi = recvmsg->h.resource.component[0];
+    if (supi)
+        udm_ue = udm_ue_find_by_supi(supi);
+
+    if (DataChangeNotify && DataChangeNotify->del_resources &&
+        DataChangeNotify->del_resources->count) {
+        if (!udm_ue) {
+            ogs_warn("[%s] Subscription withdrawn for unknown UE",
+                    supi ? supi : "Unknown");
+            ogs_assert(true ==
+                ogs_sbi_server_send_error(stream,
+                    OGS_SBI_HTTP_STATUS_NOT_FOUND, recvmsg,
+                    "Unknown UE", supi, NULL));
+            return false;
+        }
+
+        udm_ue->subscription_withdrawn = true;
+        if (udm_ue->udr_subs_id) {
+            ogs_free(udm_ue->udr_subs_id);
+            udm_ue->udr_subs_id = NULL;
+        }
+
+        memset(&sendmsg, 0, sizeof(sendmsg));
+        response = ogs_sbi_build_response(
+                &sendmsg, OGS_SBI_HTTP_STATUS_NO_CONTENT);
+        ogs_assert(response);
+        ogs_assert(true == ogs_sbi_server_send_response(stream, response));
+
+        send_deregistration_notification(udm_ue);
+        return true;
+    }
+
     if (!DataChangeNotify || !DataChangeNotify->notify_items) {
         ogs_error("No DataChangeNotify");
         ogs_assert(true ==
@@ -382,10 +482,6 @@ bool udm_nudm_callback_handle_data_change_notify(
                 "No DataChangeNotify", NULL, NULL));
         return false;
     }
-
-    supi = recvmsg->h.resource.component[0];
-    if (supi)
-        udm_ue = udm_ue_find_by_supi(supi);
 
     if (!udm_ue || !ogs_list_count(&udm_ue->sdm_subscription_list)) {
         ogs_warn("[%s] No SDM subscription for data change",

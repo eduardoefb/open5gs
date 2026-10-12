@@ -61,6 +61,7 @@ struct udm_ue_s {
     char *amf_instance_id;
 
     char *dereg_callback_uri;
+    bool subscription_withdrawn;
 
     char *udr_subs_id;
 

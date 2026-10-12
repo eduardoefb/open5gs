@@ -80,6 +80,7 @@ void udm_ue_state_operational(ogs_fsm_t *s, udm_event_t *e)
             CASE(OGS_SBI_HTTP_METHOD_POST)
                 SWITCH(message->h.resource.component[1])
                 CASE(OGS_SBI_RESOURCE_NAME_SECURITY_INFORMATION)
+                    udm_ue->subscription_withdrawn = false;
                     udm_nudm_ueau_handle_get(udm_ue, stream, message);
                     break;
                 CASE(OGS_SBI_RESOURCE_NAME_AUTH_EVENTS)

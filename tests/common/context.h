@@ -406,6 +406,8 @@ typedef struct test_ue_s {
     /* 5GC: Last received message */
     S1AP_ProcedureCode_t ngap_procedure_code;
     uint8_t gmm_message_type;
+    uint8_t gmm_cause;
+    bool re_registration_required;
     ogs_nas_5gmm_cause_t registration_reject_cause;
     uint8_t gsm_message_type;
 

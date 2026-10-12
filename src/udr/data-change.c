@@ -23,7 +23,10 @@
  * Subscriber data is written to MongoDB directly (WebUI, dbctl), bypassing
  * the UDR. Changes are therefore detected with a MongoDB change stream
  * (requires a replica set), compared with the data last notified to each
- * subscription, and sent to the UDM as a DataChangeNotify.
+ * subscription, and sent to the UDM as a DataChangeNotify. A subscriber
+ * still missing DELETE_GRACE after a delete event is reported in delResources
+ * and its subscriptions are removed (a delete followed by a re-insert of the
+ * same IMSI is not a withdrawal).
  */
 
 #include "sbi-path.h"
@@ -31,10 +34,13 @@
 
 #define POLL_INTERVAL   ogs_time_from_msec(500)
 #define RETRY_INTERVAL  ogs_time_from_sec(10)
+#define DELETE_GRACE    ogs_time_from_sec(2)
 /* mongoc_change_stream_next() blocks the event loop for up to this long */
 #define MAX_AWAIT_MSEC  10
 
 static ogs_timer_t *t_poll = NULL;
+static ogs_timer_t *t_delete = NULL;
+static bool delete_pending = false;
 static mongoc_collection_t *collection = NULL;
 static mongoc_change_stream_t *change_stream = NULL;
 static bool watch_warned = false;
@@ -56,6 +62,7 @@ static int watch_open(void)
     pipeline = BCON_NEW("pipeline", "[",
             "{", "$match", "{", "operationType", "{", "$in", "[",
                 BCON_UTF8("insert"), BCON_UTF8("update"), BCON_UTF8("replace"),
+                BCON_UTF8("delete"),
             "]", "}", "}", "}",
         "]");
     opts = BCON_NEW(
@@ -460,7 +467,8 @@ static int notify_cb(int status, ogs_sbi_response_t *response, void *data)
     return OGS_OK;
 }
 
-static void send_data_change_notify(udr_subs_t *subs, OpenAPI_list_t *items)
+static void send_data_change_notify(udr_subs_t *subs,
+        OpenAPI_list_t *items, OpenAPI_list_t *del_resources)
 {
     ogs_sbi_message_t message;
     ogs_sbi_request_t *request = NULL;
@@ -503,6 +511,7 @@ static void send_data_change_notify(udr_subs_t *subs, OpenAPI_list_t *items)
     DataChangeNotify.original_callback_reference = OriginalCallbackReference;
     DataChangeNotify.ue_id = subs->ue_id;
     DataChangeNotify.notify_items = items;
+    DataChangeNotify.del_resources = del_resources;
 
     memset(&message, 0, sizeof(message));
     message.h.method = (char *)OGS_SBI_HTTP_METHOD_POST;
@@ -568,7 +577,7 @@ static void handle_change(const bson_t *document)
             if (items) {
                 ogs_info("[%s] Subscription data changed, notifying [%s]",
                         supi, subs->callback_reference);
-                send_data_change_notify(subs, items);
+                send_data_change_notify(subs, items, NULL);
                 notify_items_free(items);
             }
             cJSON_Delete(subs->snapshot);
@@ -580,6 +589,84 @@ static void handle_change(const bson_t *document)
     if (snapshot)
         cJSON_Delete(snapshot);
     ogs_free(supi);
+}
+
+static bool subscriber_exists(const char *supi)
+{
+    const char *imsi = NULL;
+    bson_t *query = NULL;
+    bson_error_t error;
+    int64_t count;
+
+    imsi = strchr(supi, '-');
+    imsi = imsi ? imsi + 1 : supi;
+
+    query = BCON_NEW("imsi", BCON_UTF8(imsi));
+    count = mongoc_collection_count_documents(
+            collection, query, NULL, NULL, NULL, &error);
+    bson_destroy(query);
+
+    if (count < 0) {
+        ogs_error("[%s] Cannot count subscribers [%s]", supi, error.message);
+        return true;
+    }
+
+    return count > 0;
+}
+
+/* The delete event only carries the document _id, not the IMSI */
+static void handle_subscriber_delete(void *data)
+{
+    udr_subs_t *subs = NULL, *next_subs = NULL;
+
+    delete_pending = false;
+
+    ogs_list_for_each_safe(&udr_self()->subs_list, next_subs, subs) {
+        OpenAPI_list_t *del_resources = NULL;
+        OpenAPI_lnode_t *node = NULL;
+
+        if (subscriber_exists(subs->ue_id))
+            continue;
+
+        del_resources = OpenAPI_list_create();
+        ogs_assert(del_resources);
+        if (subs->am_data)
+            OpenAPI_list_add(del_resources, resource_uri(
+                        subs->ue_id, OGS_SBI_RESOURCE_NAME_AM_DATA, NULL));
+        if (subs->sm_data)
+            OpenAPI_list_add(del_resources, resource_uri(
+                        subs->ue_id, OGS_SBI_RESOURCE_NAME_SM_DATA, NULL));
+
+        ogs_info("[%s] Subscriber deleted, notifying [%s]",
+                subs->ue_id, subs->callback_reference);
+        send_data_change_notify(subs, NULL, del_resources);
+
+        OpenAPI_list_for_each(del_resources, node)
+            ogs_free(node->data);
+        OpenAPI_list_free(del_resources);
+
+        udr_subs_remove(subs);
+    }
+}
+
+static void handle_event(const bson_t *document)
+{
+    bson_iter_t iter;
+
+    if (!ogs_list_count(&udr_self()->subs_list))
+        return;
+
+    if (bson_iter_init_find(&iter, document, "operationType") &&
+        BSON_ITER_HOLDS_UTF8(&iter) &&
+        !strcmp(bson_iter_utf8(&iter, NULL), "delete")) {
+        if (!delete_pending) {
+            delete_pending = true;
+            ogs_timer_start(t_delete, DELETE_GRACE);
+        }
+        return;
+    }
+
+    handle_change(document);
 }
 
 static void poll_cb(void *data)
@@ -595,7 +682,7 @@ static void poll_cb(void *data)
     }
 
     while (mongoc_change_stream_next(change_stream, &document))
-        handle_change(document);
+        handle_event(document);
 
     if (mongoc_change_stream_error_document(change_stream, &error, &err_doc)) {
         ogs_warn("MongoDB change stream error [%s], reopening",
@@ -613,6 +700,9 @@ void udr_data_change_open(void)
 {
     t_poll = ogs_timer_add(ogs_app()->timer_mgr, poll_cb, NULL);
     ogs_assert(t_poll);
+    t_delete = ogs_timer_add(ogs_app()->timer_mgr,
+            handle_subscriber_delete, NULL);
+    ogs_assert(t_delete);
     ogs_timer_start(t_poll, POLL_INTERVAL);
 }
 
@@ -622,6 +712,11 @@ void udr_data_change_close(void)
         ogs_timer_delete(t_poll);
         t_poll = NULL;
     }
+    if (t_delete) {
+        ogs_timer_delete(t_delete);
+        t_delete = NULL;
+    }
+    delete_pending = false;
     if (change_stream) {
         mongoc_change_stream_destroy(change_stream);
         change_stream = NULL;
