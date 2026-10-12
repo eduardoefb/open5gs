@@ -2327,7 +2327,8 @@ void smf_gsm_state_operational(ogs_fsm_t *s, smf_event_t *e)
                 param.state = SMF_UE_OR_NETWORK_REQUESTED_PDU_SESSION_RELEASE;
                 sess->pti = OGS_NAS_PROCEDURE_TRANSACTION_IDENTITY_UNASSIGNED;
                 param.n1smbuf = gsm_build_pdu_session_release_command(
-                    sess, OGS_5GSM_CAUSE_REACTIVATION_REQUESTED);
+                    sess, sess->release_gsm_cause ? sess->release_gsm_cause :
+                        OGS_5GSM_CAUSE_REACTIVATION_REQUESTED);
                 ogs_assert(param.n1smbuf);
 
                 param.n2smbuf =

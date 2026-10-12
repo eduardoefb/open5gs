@@ -359,6 +359,8 @@ typedef struct smf_sess_s {
 
     /* Include Session-AMBR in the next PDU Session Modification Command */
     bool            session_ambr_update;
+    /* 5GSM cause of an SMF-initiated release (0: reactivation requested) */
+    uint8_t         release_gsm_cause;
     uint8_t         request_type;   /* Request type */
 
     char            *sm_context_ref; /* smContextRef */

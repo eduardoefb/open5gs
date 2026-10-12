@@ -2811,7 +2811,7 @@ static void update_default_qos(smf_sess_t *sess, cJSON *json, bool *changed)
 }
 
 static void update_sm_data(smf_sess_t *sess, OpenAPI_change_item_t *item,
-        bool *ambr_changed, bool *qos_changed)
+        bool *ambr_changed, bool *qos_changed, bool *dnn_removed)
 {
     const char *prefix = "/dnnConfigurations/";
     const char *path = NULL;
@@ -2829,6 +2829,11 @@ static void update_sm_data(smf_sess_t *sess, OpenAPI_change_item_t *item,
         (path[len] != '\0' && path[len] != '/'))
         return;
     path += len;
+
+    if (item->op == OpenAPI_change_type__REMOVE && !strcmp(path, "")) {
+        *dnn_removed = true;
+        return;
+    }
 
     if (item->op != OpenAPI_change_type_REPLACE &&
         item->op != OpenAPI_change_type_ADD) {
@@ -2896,6 +2901,27 @@ static void modify_session(smf_sess_t *sess, bool ambr_changed)
                 HOME_ROUTED_ROAMING_IN_HSMF(sess) ?
                     OGS_PFCP_MODIFY_HOME_ROUTED_ROAMING|pfcp_flags :
                     pfcp_flags, 0));
+}
+
+/*
+ * TS 23.502 4.3.4.2 step 1b: the DNN of the PDU Session is no longer in
+ * the subscription (UDM notification) -> network requested PDU Session
+ * Release. #36 regular deactivation: the UE must not ask for it again.
+ */
+static void release_session(smf_ue_t *smf_ue, smf_sess_t *sess)
+{
+    if (!OGS_FSM_CHECK(&sess->sm, smf_gsm_state_operational)) {
+        ogs_warn("[%s:%d] DNN [%s] unsubscribed, session not operational",
+                smf_ue->supi, sess->psi, sess->session.name);
+        return;
+    }
+
+    ogs_info("[%s:%d] DNN [%s] no longer subscribed: releasing session",
+            smf_ue->supi, sess->psi, sess->session.name);
+
+    sess->release_gsm_cause = OGS_5GSM_CAUSE_REGULAR_DEACTIVATION;
+    smf_trigger_session_release(
+            sess, NULL, OGS_PFCP_DELETE_TRIGGER_SMF_INITIATED);
 }
 
 bool smf_nsmf_callback_handle_sdm_data_change_notify(
@@ -2975,6 +3001,7 @@ bool smf_nsmf_callback_handle_sdm_data_change_notify(
             ogs_list_for_each(&smf_ue->sess_list, sess) {
                 OpenAPI_lnode_t *node_ci;
                 bool ambr_changed = false, qos_changed = false;
+                bool dnn_removed = false;
 
                 if (psi != OGS_NAS_PDU_SESSION_IDENTITY_UNASSIGNED &&
                     sess->psi != psi)
@@ -2984,7 +3011,12 @@ bool smf_nsmf_callback_handle_sdm_data_change_notify(
                     OpenAPI_change_item_t *change_item = node_ci->data;
                     if (change_item)
                         update_sm_data(sess, change_item,
-                                &ambr_changed, &qos_changed);
+                                &ambr_changed, &qos_changed, &dnn_removed);
+                }
+
+                if (dnn_removed) {
+                    release_session(smf_ue, sess);
+                    continue;
                 }
 
                 if (ambr_changed || qos_changed) {
