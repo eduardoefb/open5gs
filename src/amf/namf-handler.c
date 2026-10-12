@@ -1020,7 +1020,9 @@ static void update_subscribed_nssai(amf_ue_t *amf_ue, OpenAPI_nssai_t *NSSAI)
     for (j = 0; j < num_of_entry; j++) {
         ogs_slice_data_t *slice = NULL;
 
-        if (ogs_slice_find_by_s_nssai(amf_ue->slice, amf_ue->num_of_slice,
+        /* Every old slice may have been removed (e.g. its only DNN moved) */
+        if (amf_ue->num_of_slice &&
+            ogs_slice_find_by_s_nssai(amf_ue->slice, amf_ue->num_of_slice,
                     &entry[j].s_nssai))
             continue;
 
