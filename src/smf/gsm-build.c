@@ -392,6 +392,18 @@ ogs_pkbuf_t *gsm_build_pdu_session_modification_command(
     message.gsm.h.procedure_transaction_identity = sess->pti;
     message.gsm.h.message_type = OGS_NAS_5GS_PDU_SESSION_MODIFICATION_COMMAND;
 
+    if (sess->session_ambr_update) {
+        pdu_session_modification_command->presencemask |=
+            OGS_NAS_5GS_PDU_SESSION_MODIFICATION_COMMAND_SESSION_AMBR_PRESENT;
+        pdu_session_modification_command->session_ambr.length = 6;
+        ogs_nas_bitrate_from_uint64(
+                &pdu_session_modification_command->session_ambr.downlink,
+                sess->session.ambr.downlink);
+        ogs_nas_bitrate_from_uint64(
+                &pdu_session_modification_command->session_ambr.uplink,
+                sess->session.ambr.uplink);
+    }
+
     /* QoS rule */
     if (HOME_ROUTED_ROAMING_IN_VSMF(sess)) {
         num = 0;

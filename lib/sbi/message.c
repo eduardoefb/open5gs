@@ -221,6 +221,11 @@ void ogs_sbi_message_free(ogs_sbi_message_t *message)
         OpenAPI_sdm_subscription_free(message->SDMSubscription);
     if (message->ModificationNotification)
         OpenAPI_modification_notification_free(message->ModificationNotification);
+    if (message->SubscriptionDataSubscriptions)
+        OpenAPI_subscription_data_subscriptions_free(
+                message->SubscriptionDataSubscriptions);
+    if (message->DataChangeNotify)
+        OpenAPI_data_change_notify_free(message->DataChangeNotify);
     if (message->SecNegotiateReqData)
         OpenAPI_sec_negotiate_req_data_free(message->SecNegotiateReqData);
     if (message->SecNegotiateRspData)
@@ -1788,6 +1793,14 @@ static char *build_json(ogs_sbi_message_t *message)
         item = OpenAPI_modification_notification_convertToJSON(
             message->ModificationNotification);
         ogs_assert(item);
+    } else if (message->SubscriptionDataSubscriptions) {
+        item = OpenAPI_subscription_data_subscriptions_convertToJSON(
+            message->SubscriptionDataSubscriptions);
+        ogs_assert(item);
+    } else if (message->DataChangeNotify) {
+        item = OpenAPI_data_change_notify_convertToJSON(
+            message->DataChangeNotify);
+        ogs_assert(item);
     } else if (message->SecNegotiateReqData) {
         item = OpenAPI_sec_negotiate_req_data_convertToJSON(
             message->SecNegotiateReqData);
@@ -2265,6 +2278,24 @@ static int parse_json(ogs_sbi_message_t *message,
         case OpenAPI_service_name_nudr_dr:
             SWITCH(message->h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_SUBSCRIPTION_DATA)
+                if (message->h.resource.component[1] &&
+                    !strcmp(message->h.resource.component[1],
+                        OGS_SBI_RESOURCE_NAME_SUBS_TO_NOTIFY)) {
+                    if (message->res_status < 300) {
+                        message->SubscriptionDataSubscriptions =
+                            OpenAPI_subscription_data_subscriptions_parseFromJSON(
+                                    item);
+                        if (!message->SubscriptionDataSubscriptions) {
+                            rv = OGS_ERROR;
+                            ogs_error("JSON parse error");
+                        }
+                    } else {
+                        ogs_error("HTTP ERROR Status : %d",
+                                message->res_status);
+                    }
+                    break;
+                }
+
                 SWITCH(message->h.resource.component[2])
                 CASE(OGS_SBI_RESOURCE_NAME_AUTHENTICATION_DATA)
                     SWITCH(message->h.resource.component[3])
@@ -3212,6 +3243,28 @@ static int parse_json(ogs_sbi_message_t *message,
                 rv = OGS_ERROR;
                 ogs_error("Unknown resource name [%s]",
                         message->h.resource.component[0]);
+            END
+            break;
+
+        case OGS_SBI_SERVICE_NAME_ID_NUDM_CALLBACK:
+            SWITCH(message->h.resource.component[1])
+            CASE(OGS_SBI_RESOURCE_NAME_DATA_CHANGE_NOTIFY)
+                if (message->res_status < 300) {
+                    message->DataChangeNotify =
+                        OpenAPI_data_change_notify_parseFromJSON(item);
+                    if (!message->DataChangeNotify) {
+                        rv = OGS_ERROR;
+                        ogs_error("JSON parse error");
+                    }
+                } else {
+                    ogs_error("HTTP ERROR Status : %d", message->res_status);
+                }
+                break;
+
+            DEFAULT
+                rv = OGS_ERROR;
+                ogs_error("Unknown resource name [%s]",
+                        message->h.resource.component[1]);
             END
             break;
 

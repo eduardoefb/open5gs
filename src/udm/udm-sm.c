@@ -18,6 +18,7 @@
  */
 
 #include "sbi-path.h"
+#include "data-change.h"
 #include "nnrf-handler.h"
 
 void udm_state_initial(ogs_fsm_t *s, udm_event_t *e)
@@ -269,6 +270,23 @@ void udm_state_operational(ogs_fsm_t *s, udm_event_t *e)
             END
             break;
 
+        case OGS_SBI_SERVICE_NAME_ID_NUDM_CALLBACK:
+            SWITCH(message.h.resource.component[1])
+            CASE(OGS_SBI_RESOURCE_NAME_DATA_CHANGE_NOTIFY)
+                udm_nudm_callback_handle_data_change_notify(stream, &message);
+                break;
+
+            DEFAULT
+                ogs_error("Invalid resource name [%s]",
+                        message.h.resource.component[1]);
+                ogs_assert(true ==
+                    ogs_sbi_server_send_error(stream,
+                        OGS_SBI_HTTP_STATUS_BAD_REQUEST, &message,
+                        "Invalid resource name",
+                        message.h.resource.component[1], NULL));
+            END
+            break;
+
         default:
             ogs_error("Invalid API name [%s]", message.h.service.name);
             ogs_assert(true ==
@@ -445,6 +463,28 @@ void udm_state_operational(ogs_fsm_t *s, udm_event_t *e)
         case OpenAPI_service_name_nudr_dr:
             SWITCH(message.h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_SUBSCRIPTION_DATA)
+                if (message.h.resource.component[1] &&
+                    !strcmp(message.h.resource.component[1],
+                        OGS_SBI_RESOURCE_NAME_SUBS_TO_NOTIFY)) {
+                    sbi_xact_id = OGS_POINTER_TO_UINT(e->h.sbi.data);
+                    ogs_assert(sbi_xact_id >= OGS_MIN_POOL_ID &&
+                            sbi_xact_id <= OGS_MAX_POOL_ID);
+
+                    sbi_xact = ogs_sbi_xact_find_by_id(sbi_xact_id);
+                    if (!sbi_xact) {
+                        ogs_error(
+                                "SBI transaction has already been removed [%d]",
+                                sbi_xact_id);
+                        break;
+                    }
+
+                    udm_ue_id = sbi_xact->sbi_object_id;
+                    ogs_sbi_xact_remove(sbi_xact);
+
+                    udm_nudr_dr_handle_subs_to_notify(udm_ue_id, &message);
+                    break;
+                }
+
                 SWITCH(message.h.resource.component[3])
                 CASE(OGS_SBI_RESOURCE_NAME_SMF_REGISTRATIONS)
                     sbi_xact_id = OGS_POINTER_TO_UINT(e->h.sbi.data);
@@ -645,17 +685,18 @@ void udm_state_operational(ogs_fsm_t *s, udm_event_t *e)
                 break;
             }
 
-            ogs_assert(sbi_xact->assoc_stream_id >= OGS_MIN_POOL_ID &&
-                    sbi_xact->assoc_stream_id <= OGS_MAX_POOL_ID);
-            stream = ogs_sbi_stream_find_by_id(sbi_xact->assoc_stream_id);
+            if (sbi_xact->assoc_stream_id >= OGS_MIN_POOL_ID &&
+                sbi_xact->assoc_stream_id <= OGS_MAX_POOL_ID)
+                stream = ogs_sbi_stream_find_by_id(sbi_xact->assoc_stream_id);
+            else
+                stream = NULL;
 
             ogs_sbi_xact_remove(sbi_xact);
 
             ogs_error("Cannot receive SBI message");
 
             if (!stream) {
-                ogs_error("STREAM has already been removed [%d]",
-                        sbi_xact->assoc_stream_id);
+                ogs_error("No associated STREAM");
                 break;
             }
             ogs_assert(true ==

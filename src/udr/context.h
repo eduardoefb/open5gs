@@ -36,13 +36,34 @@ extern int __udr_log_domain;
 #define OGS_LOG_DOMAIN __udr_log_domain
 
 typedef struct udr_context_s {
+    ogs_list_t subs_list;
 } udr_context_t;
+
+/* Nudr_DataRepository subs-to-notify (TS 29.505 5.2.2.x) */
+typedef struct udr_subs_s {
+    ogs_lnode_t lnode;
+
+    char *id;
+    char *ue_id;
+    char *callback_reference;
+
+    bool am_data;
+    bool sm_data;
+
+    /* Last provisioned data sent to the subscriber, used to compute changes */
+    cJSON *snapshot;
+} udr_subs_t;
 
 void udr_context_init(void);
 void udr_context_final(void);
 udr_context_t *udr_self(void);
 
 int udr_context_parse_config(void);
+
+udr_subs_t *udr_subs_add(char *ue_id, char *callback_reference);
+void udr_subs_remove(udr_subs_t *subs);
+void udr_subs_remove_all(void);
+udr_subs_t *udr_subs_find_by_id(char *id);
 
 #ifdef __cplusplus
 }

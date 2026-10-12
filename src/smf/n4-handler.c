@@ -1080,6 +1080,7 @@ void smf_5gc_n4_handle_session_modification_response(
                     sess,
                     (flags & OGS_PFCP_MODIFY_QOS_MODIFY) ? true : false);
             ogs_assert(param.n2smbuf);
+            sess->session_ambr_update = false;
 
             smf_namf_comm_send_n1_n2_message_transfer(sess, NULL, &param);
 

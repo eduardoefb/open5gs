@@ -136,6 +136,8 @@ extern "C" {
 #define OGS_SBI_RESOURCE_NAME_DEREG_NOTIFY          "dereg-notify"
 #define OGS_SBI_RESOURCE_NAME_SDMSUBSCRIPTION_NOTIFY \
                                             "sdmsubscription-notify"
+#define OGS_SBI_RESOURCE_NAME_SUBS_TO_NOTIFY        "subs-to-notify"
+#define OGS_SBI_RESOURCE_NAME_DATA_CHANGE_NOTIFY    "data-change-notify"
 
 #define OGS_SBI_RESOURCE_NAME_POLICIES              "policies"
 #define OGS_SBI_RESOURCE_NAME_SM_POLICIES           "sm-policies"
@@ -613,6 +615,8 @@ typedef struct ogs_sbi_message_s {
     OpenAPI_deregistration_data_t *DeregistrationData;
     OpenAPI_sdm_subscription_t *SDMSubscription;
     OpenAPI_modification_notification_t *ModificationNotification;
+    OpenAPI_subscription_data_subscriptions_t *SubscriptionDataSubscriptions;
+    OpenAPI_data_change_notify_t *DataChangeNotify;
     OpenAPI_smf_registration_t *SmfRegistration;
     OpenAPI_sec_negotiate_req_data_t *SecNegotiateReqData;
     OpenAPI_sec_negotiate_rsp_data_t *SecNegotiateRspData;

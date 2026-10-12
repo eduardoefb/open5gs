@@ -51,6 +51,7 @@ typedef struct gmm_configuration_update_command_param_s {
     int acknowledgement_requested;
     int nitz;
     int guti;
+    int nssai;
 } gmm_configuration_update_command_param_t;
 
 ogs_pkbuf_t *gmm_build_configuration_update_command(

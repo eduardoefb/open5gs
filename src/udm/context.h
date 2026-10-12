@@ -62,6 +62,8 @@ struct udm_ue_s {
 
     char *dereg_callback_uri;
 
+    char *udr_subs_id;
+
     uint8_t k[OGS_KEY_LEN];
     uint8_t opc[OGS_KEY_LEN];
     uint8_t amf[OGS_AMF_LEN];
@@ -97,6 +99,12 @@ typedef struct udm_sdm_subscription_s {
 
     char *id;
     char *data_change_callback_uri;
+
+    bool am_data;
+    bool sm_data;
+    char *dnn;
+    bool has_s_nssai;
+    ogs_s_nssai_t s_nssai;
 
     udm_ue_t *udm_ue;
 } udm_sdm_subscription_t;

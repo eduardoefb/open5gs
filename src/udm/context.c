@@ -217,6 +217,9 @@ void udm_ue_remove(udm_ue_t *udm_ue)
     udm_sess_remove_all(udm_ue);
     udm_sdm_subscription_remove_all(udm_ue);
 
+    if (udm_ue->udr_subs_id)
+        ogs_free(udm_ue->udr_subs_id);
+
     OpenAPI_auth_event_free(udm_ue->auth_event);
     OpenAPI_amf3_gpp_access_registration_free(
             udm_ue->amf_3gpp_access_registration);
@@ -409,6 +412,8 @@ void udm_sdm_subscription_remove(udm_sdm_subscription_t *sdm_subscription)
 
     if (sdm_subscription->data_change_callback_uri)
         ogs_free(sdm_subscription->data_change_callback_uri);
+    if (sdm_subscription->dnn)
+        ogs_free(sdm_subscription->dnn);
 
     ogs_pool_free(&udm_sdm_subscription_pool, sdm_subscription);
 }

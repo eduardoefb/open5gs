@@ -615,6 +615,43 @@ ogs_pkbuf_t *gmm_build_configuration_update_command(
         mobile_identity->buffer = &mobile_identity_guti;
     }
 
+    if (param->nssai) {
+        ogs_nas_s_nssai_ie_t configured[OGS_MAX_NUM_OF_SLICE];
+        int i;
+
+        if (amf_ue->allowed_nssai.num_of_s_nssai) {
+            ogs_nas_build_nssai(&configuration_update_command->allowed_nssai,
+                    amf_ue->allowed_nssai.s_nssai,
+                    amf_ue->allowed_nssai.num_of_s_nssai);
+            configuration_update_command->presencemask |=
+                OGS_NAS_5GS_CONFIGURATION_UPDATE_COMMAND_ALLOWED_NSSAI_PRESENT;
+        }
+
+        if (amf_ue->rejected_nssai.num_of_s_nssai) {
+            ogs_nas_build_rejected_nssai(
+                    &configuration_update_command->rejected_nssai,
+                    amf_ue->rejected_nssai.s_nssai,
+                    amf_ue->rejected_nssai.num_of_s_nssai);
+            configuration_update_command->presencemask |=
+                OGS_NAS_5GS_CONFIGURATION_UPDATE_COMMAND_REJECTED_NSSAI_PRESENT;
+        }
+
+        memset(configured, 0, sizeof(configured));
+        for (i = 0; i < amf_ue->num_of_slice && i < OGS_MAX_NUM_OF_SLICE;
+                i++) {
+            configured[i].sst = amf_ue->slice[i].s_nssai.sst;
+            configured[i].sd.v = amf_ue->slice[i].s_nssai.sd.v;
+            configured[i].mapped_hplmn_sd.v = OGS_S_NSSAI_NO_SD_VALUE;
+        }
+        if (i) {
+            ogs_nas_build_nssai(
+                    &configuration_update_command->configured_nssai,
+                    configured, i);
+            configuration_update_command->presencemask |=
+                OGS_NAS_5GS_CONFIGURATION_UPDATE_COMMAND_CONFIGURED_NSSAI_PRESENT;
+        }
+    }
+
     return nas_5gs_security_encode(amf_ue, &message);
 }
 

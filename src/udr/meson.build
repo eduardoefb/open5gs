@@ -20,6 +20,7 @@ libudr_sources = files('''
     event.c
 
     nudr-handler.c
+    data-change.c
 
     sbi-path.c
     udr-sm.c

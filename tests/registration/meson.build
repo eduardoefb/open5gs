@@ -18,6 +18,7 @@
 test5gc_registration_sources = files('''
     abts-main.c
     simple-test.c
+    data-change-test.c
     guti-test.c
     auth-test.c
     ecc-test.c

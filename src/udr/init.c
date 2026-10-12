@@ -18,6 +18,7 @@
  */
 
 #include "sbi-path.h"
+#include "data-change.h"
 
 static ogs_thread_t *thread;
 static void udr_main(void *data);
@@ -49,6 +50,8 @@ int udr_initialize(void)
 
     rv = udr_sbi_open();
     if (rv != OGS_OK) return rv;
+
+    udr_data_change_open();
 
     thread = ogs_thread_create(udr_main, NULL);
     if (!thread) return OGS_ERROR;
@@ -93,6 +96,7 @@ void udr_terminate(void)
 
     udr_sbi_close();
 
+    udr_data_change_close();
     ogs_dbi_final();
 
     udr_context_final();

@@ -713,6 +713,7 @@ libsbi_openapi_sources = files('''
     model/model_5_gvn_group_data.c
     model/model_5_mbs_authorization_info.c
     model/modification_notification.c
+    model/data_change_notify.c
     model/modify_200_response.c
     model/modify_pdu_session_200_response.c
     model/modify_pdu_session_400_response.c

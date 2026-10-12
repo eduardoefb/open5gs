@@ -425,6 +425,32 @@ ogs_pkbuf_t *ngap_build_pdu_session_resource_modify_request_transfer(
             &asn_DEF_NGAP_PDUSessionResourceModifyRequestTransfer);
     ogs_assert(message.protocolIEs);
 
+    if (sess->session_ambr_update &&
+        (sess->session.ambr.downlink || sess->session.ambr.uplink)) {
+        NGAP_PDUSessionAggregateMaximumBitRate_t
+            *PDUSessionAggregateMaximumBitRate = NULL;
+
+        ie = CALLOC(1,
+                sizeof(NGAP_PDUSessionResourceModifyRequestTransferIEs_t));
+        ogs_assert(ie);
+        ASN_SEQUENCE_ADD(message.protocolIEs, ie);
+
+        ie->id = NGAP_ProtocolIE_ID_id_PDUSessionAggregateMaximumBitRate;
+        ie->criticality = NGAP_Criticality_reject;
+        ie->value.present = NGAP_PDUSessionResourceModifyRequestTransferIEs__value_PR_PDUSessionAggregateMaximumBitRate;
+
+        PDUSessionAggregateMaximumBitRate =
+            CALLOC(1, sizeof(*PDUSessionAggregateMaximumBitRate));
+        ogs_assert(PDUSessionAggregateMaximumBitRate);
+        ie->value.choice.PDUSessionAggregateMaximumBitRate =
+            PDUSessionAggregateMaximumBitRate;
+
+        asn_uint642INTEGER(&PDUSessionAggregateMaximumBitRate->
+            pDUSessionAggregateMaximumBitRateUL, sess->session.ambr.uplink);
+        asn_uint642INTEGER(&PDUSessionAggregateMaximumBitRate->
+            pDUSessionAggregateMaximumBitRateDL, sess->session.ambr.downlink);
+    }
+
     ie = CALLOC(1, sizeof(NGAP_PDUSessionResourceModifyRequestTransferIEs_t));
     ogs_assert(ie);
     ASN_SEQUENCE_ADD(message.protocolIEs, ie);

@@ -950,6 +950,149 @@ static int update_ambr(OpenAPI_change_item_t *item_change,
     }
 }
 
+static void update_subscribed_nssai(amf_ue_t *amf_ue, OpenAPI_nssai_t *NSSAI)
+{
+    struct {
+        ogs_s_nssai_t s_nssai;
+        bool default_indicator;
+    } entry[OGS_MAX_NUM_OF_SLICE];
+    OpenAPI_list_t *list[2];
+    OpenAPI_lnode_t *node = NULL;
+    int i, j, k, num_of_entry = 0;
+
+    list[0] = NSSAI->default_single_nssais;
+    list[1] = NSSAI->single_nssais;
+
+    for (k = 0; k < 2; k++) {
+        OpenAPI_list_for_each(list[k], node) {
+            OpenAPI_snssai_t *Snssai = node->data;
+            ogs_s_nssai_t s_nssai;
+
+            if (!Snssai) continue;
+
+            s_nssai.sst = Snssai->sst;
+            s_nssai.sd = ogs_s_nssai_sd_from_string(Snssai->sd);
+
+            for (j = 0; j < num_of_entry; j++)
+                if (entry[j].s_nssai.sst == s_nssai.sst &&
+                    entry[j].s_nssai.sd.v == s_nssai.sd.v)
+                    break;
+            if (j < num_of_entry) continue;
+
+            if (num_of_entry >= OGS_MAX_NUM_OF_SLICE) {
+                ogs_error("[%s] Ignore S-NSSAI; max %d reached",
+                        amf_ue->supi, OGS_MAX_NUM_OF_SLICE);
+                break;
+            }
+
+            entry[num_of_entry].s_nssai = s_nssai;
+            entry[num_of_entry].default_indicator = (k == 0);
+            num_of_entry++;
+        }
+    }
+
+    /* Keep the SMF selection data of the slices that are still subscribed */
+    for (i = 0; i < amf_ue->num_of_slice;) {
+        ogs_slice_data_t *slice = &amf_ue->slice[i];
+
+        for (j = 0; j < num_of_entry; j++)
+            if (entry[j].s_nssai.sst == slice->s_nssai.sst &&
+                entry[j].s_nssai.sd.v == slice->s_nssai.sd.v)
+                break;
+
+        if (j < num_of_entry) {
+            slice->default_indicator = entry[j].default_indicator;
+            i++;
+            continue;
+        }
+
+        ogs_info("[%s] S-NSSAI[SST:%d SD:0x%x] removed", amf_ue->supi,
+                slice->s_nssai.sst, slice->s_nssai.sd.v);
+        for (k = 0; k < slice->num_of_session; k++)
+            ogs_free(slice->session[k].name);
+
+        amf_ue->num_of_slice--;
+        memmove(slice, slice + 1,
+                (amf_ue->num_of_slice - i) * sizeof(*slice));
+        memset(&amf_ue->slice[amf_ue->num_of_slice], 0, sizeof(*slice));
+    }
+
+    for (j = 0; j < num_of_entry; j++) {
+        ogs_slice_data_t *slice = NULL;
+
+        if (ogs_slice_find_by_s_nssai(amf_ue->slice, amf_ue->num_of_slice,
+                    &entry[j].s_nssai))
+            continue;
+
+        slice = &amf_ue->slice[amf_ue->num_of_slice++];
+        memset(slice, 0, sizeof(*slice));
+        slice->s_nssai = entry[j].s_nssai;
+        slice->default_indicator = entry[j].default_indicator;
+
+        ogs_info("[%s] S-NSSAI[SST:%d SD:0x%x] added", amf_ue->supi,
+                slice->s_nssai.sst, slice->s_nssai.sd.v);
+    }
+}
+
+static int update_nssai(OpenAPI_change_item_t *item_change,
+                        amf_ue_t *amf_ue, bool *nssai_changed)
+{
+    cJSON *json = NULL;
+    OpenAPI_nssai_t *NSSAI = NULL;
+
+    if (!item_change->path) {
+        ogs_error("No 'path' field present");
+        return OGS_ERROR;
+    }
+
+    switch (item_change->op) {
+    case OpenAPI_change_type_REPLACE:
+    case OpenAPI_change_type_ADD:
+        if (!strcmp(item_change->path, "") ||
+            !strcmp(item_change->path, "/nssai")) {
+            if (!item_change->new_value || !item_change->new_value->json) {
+                ogs_error("No 'new_value' field present");
+                return OGS_ERROR;
+            }
+            json = item_change->new_value->json;
+        } else {
+            return OGS_OK;
+        }
+
+        if (!strcmp(item_change->path, "")) {
+            json = cJSON_GetObjectItemCaseSensitive(json, "nssai");
+            if (!json)
+                return OGS_OK;
+        }
+
+        if (!cJSON_IsObject(json)) {
+            ogs_error("Invalid type of nssai");
+            return OGS_ERROR;
+        }
+
+        NSSAI = OpenAPI_nssai_parseFromJSON(json);
+        if (!NSSAI) {
+            ogs_error("Cannot parse nssai");
+            return OGS_ERROR;
+        }
+
+        update_subscribed_nssai(amf_ue, NSSAI);
+        OpenAPI_nssai_free(NSSAI);
+
+        *nssai_changed = true;
+        return OGS_OK;
+
+    case OpenAPI_change_type__REMOVE:
+        if (!strcmp(item_change->path, "/nssai"))
+            ogs_warn("[%s] Ignore removal of the subscribed NSSAI",
+                    amf_ue->supi);
+        return OGS_OK;
+
+    default:
+        return OGS_OK;
+    }
+}
+
 int amf_namf_callback_handle_sdm_data_change_notify(
         ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg)
 {
@@ -967,6 +1110,7 @@ int amf_namf_callback_handle_sdm_data_change_notify(
     char *res_name = NULL;
 
     bool ambr_changed = false;
+    bool nssai_changed = false;
 
     ogs_assert(stream);
     ogs_assert(recvmsg);
@@ -982,8 +1126,24 @@ int amf_namf_callback_handle_sdm_data_change_notify(
         OpenAPI_notify_item_t *item = node->data;
 
         char *saveptr = NULL;
+        char *resource_id = NULL, *p = NULL;
 
-        ueid = ogs_sbi_parse_uri(item->resource_id, "/", &saveptr);
+        if (!item || !item->resource_id) {
+            status = OGS_SBI_HTTP_STATUS_BAD_REQUEST;
+            ogs_error("No resourceId");
+            goto cleanup;
+        }
+
+        /* Accept both "{supi}/am-data" and the full Nudm_SDM URI */
+        resource_id = item->resource_id;
+        p = strstr(resource_id, "/nudm-sdm/");
+        if (p) {
+            p = strchr(p + strlen("/nudm-sdm/"), '/');
+            if (p)
+                resource_id = p + 1;
+        }
+
+        ueid = ogs_sbi_parse_uri(resource_id, "/", &saveptr);
         if (!ueid) {
             status = OGS_SBI_HTTP_STATUS_BAD_REQUEST;
             ogs_error("[%s] No UeId", item->resource_id);
@@ -1012,7 +1172,8 @@ int amf_namf_callback_handle_sdm_data_change_notify(
                 OpenAPI_change_item_t *change_item = node_ci->data;
                 if (update_rat_res(change_item, amf_ue->rat_restrictions) ||
                         update_ambr(change_item, &amf_ue->ue_ambr,
-                            &ambr_changed)) {
+                            &ambr_changed) ||
+                        update_nssai(change_item, amf_ue, &nssai_changed)) {
                     status = OGS_SBI_HTTP_STATUS_BAD_REQUEST;
                     goto cleanup;
                 }
@@ -1034,10 +1195,9 @@ int amf_namf_callback_handle_sdm_data_change_notify(
     if (amf_ue) {
         ran_ue_t *ran_ue = ran_ue_find_by_id(amf_ue->ran_ue_id);
         if (!ran_ue) {
-            ogs_error("NG context has already been removed");
             /* ran_ue is required for amf_ue_is_rat_restricted() */
-
-            ogs_error("Not implemented : Use Implicit De-registration");
+            ogs_warn("[%s] UE is not connected; subscription data updated "
+                    "without signalling the UE", amf_ue->supi);
             state = AMF_NETWORK_INITIATED_IMPLICIT_DE_REGISTERED;
 
         } else if (amf_ue_is_rat_restricted(amf_ue)) {
@@ -1080,15 +1240,40 @@ int amf_namf_callback_handle_sdm_data_change_notify(
                 ogs_assert(r != OGS_ERROR);
             }
 
-        } else if (ambr_changed) {
-            ogs_pkbuf_t *ngapbuf;
+        } else {
+            if (ambr_changed) {
+                ogs_pkbuf_t *ngapbuf;
 
-            ngapbuf = ngap_build_ue_context_modification_request(amf_ue);
-            ogs_assert(ngapbuf);
+                ngapbuf = ngap_build_ue_context_modification_request(amf_ue);
+                ogs_assert(ngapbuf);
 
-            r = ngap_send_to_ran_ue(ran_ue, ngapbuf);
-            ogs_expect(r == OGS_OK);
-            ogs_assert(r != OGS_ERROR);
+                r = ngap_send_to_ran_ue(ran_ue, ngapbuf);
+                ogs_expect(r == OGS_OK);
+                ogs_assert(r != OGS_ERROR);
+            }
+
+            if (nssai_changed) {
+                gmm_configuration_update_command_param_t param;
+
+                if (amf_ue->t3555.pkbuf) {
+                    ogs_warn("[%s] Configuration update in progress; "
+                            "NSSAI change will be sent at next registration",
+                            amf_ue->supi);
+                } else {
+                    amf_update_allowed_nssai(amf_ue);
+
+                    memset(&param, 0, sizeof(param));
+                    param.nssai = 1;
+                    param.acknowledgement_requested = 1;
+                    param.registration_requested =
+                        !amf_ue->allowed_nssai.num_of_s_nssai;
+
+                    r = nas_5gs_send_configuration_update_command(
+                            amf_ue, &param);
+                    ogs_expect(r == OGS_OK);
+                    ogs_assert(r != OGS_ERROR);
+                }
+            }
         }
     }
 

@@ -356,6 +356,9 @@ typedef struct smf_sess_s {
 
     uint8_t         psi; /* PDU session identity */
     uint8_t         pti; /* 5GS-NAS : Procedure transaction identity */
+
+    /* Include Session-AMBR in the next PDU Session Modification Command */
+    bool            session_ambr_update;
     uint8_t         request_type;   /* Request type */
 
     char            *sm_context_ref; /* smContextRef */

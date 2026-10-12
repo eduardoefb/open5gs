@@ -2747,11 +2747,164 @@ bool smf_nsmf_handle_release_data_in_hsmf(
     return true;
 }
 
+static void update_session_ambr(smf_sess_t *sess, cJSON *json, bool *changed)
+{
+    cJSON *uplink = NULL, *downlink = NULL;
+    ogs_bitrate_t ambr;
+
+    if (!cJSON_IsObject(json)) {
+        ogs_error("Invalid type of sessionAmbr");
+        return;
+    }
+
+    uplink = cJSON_GetObjectItemCaseSensitive(json, "uplink");
+    downlink = cJSON_GetObjectItemCaseSensitive(json, "downlink");
+    if (!cJSON_IsString(uplink) || !cJSON_IsString(downlink)) {
+        ogs_error("Invalid sessionAmbr");
+        return;
+    }
+
+    ambr.uplink = ogs_sbi_bitrate_from_string(uplink->valuestring);
+    ambr.downlink = ogs_sbi_bitrate_from_string(downlink->valuestring);
+
+    if (ambr.uplink != sess->session.ambr.uplink ||
+        ambr.downlink != sess->session.ambr.downlink) {
+        sess->session.ambr = ambr;
+        *changed = true;
+    }
+}
+
+static void update_default_qos(smf_sess_t *sess, cJSON *json, bool *changed)
+{
+    OpenAPI_subscribed_default_qos_t *DefQos = NULL;
+    ogs_qos_t qos;
+
+    if (!cJSON_IsObject(json)) {
+        ogs_error("Invalid type of 5gQosProfile");
+        return;
+    }
+
+    DefQos = OpenAPI_subscribed_default_qos_parseFromJSON(json);
+    if (!DefQos || !DefQos->arp) {
+        ogs_error("Invalid 5gQosProfile");
+        OpenAPI_subscribed_default_qos_free(DefQos);
+        return;
+    }
+
+    qos = sess->session.qos;
+    qos.index = DefQos->_5qi;
+    qos.arp.priority_level = DefQos->arp->priority_level;
+    qos.arp.pre_emption_capability =
+        DefQos->arp->preempt_cap == OpenAPI_preemption_capability_MAY_PREEMPT ?
+            OGS_5GC_PRE_EMPTION_ENABLED : OGS_5GC_PRE_EMPTION_DISABLED;
+    qos.arp.pre_emption_vulnerability =
+        DefQos->arp->preempt_vuln ==
+            OpenAPI_preemption_vulnerability_PREEMPTABLE ?
+            OGS_5GC_PRE_EMPTION_ENABLED : OGS_5GC_PRE_EMPTION_DISABLED;
+
+    OpenAPI_subscribed_default_qos_free(DefQos);
+
+    if (memcmp(&qos, &sess->session.qos, sizeof(qos))) {
+        sess->session.qos = qos;
+        *changed = true;
+    }
+}
+
+static void update_sm_data(smf_sess_t *sess, OpenAPI_change_item_t *item,
+        bool *ambr_changed, bool *qos_changed)
+{
+    const char *prefix = "/dnnConfigurations/";
+    const char *path = NULL;
+    cJSON *json = NULL;
+    size_t len;
+
+    if (!item->path || strncmp(item->path, prefix, strlen(prefix)))
+        return;
+    if (!sess->session.name)
+        return;
+
+    path = item->path + strlen(prefix);
+    len = strlen(sess->session.name);
+    if (ogs_strncasecmp(path, sess->session.name, len) ||
+        (path[len] != '\0' && path[len] != '/'))
+        return;
+    path += len;
+
+    if (item->op != OpenAPI_change_type_REPLACE &&
+        item->op != OpenAPI_change_type_ADD) {
+        ogs_warn("[%s:%d] Ignore change [%s] of [%s]",
+                sess->session.name, sess->psi,
+                OpenAPI_change_type_ToString(item->op), item->path);
+        return;
+    }
+
+    if (!item->new_value || !item->new_value->json) {
+        ogs_error("No 'new_value' field present");
+        return;
+    }
+    json = item->new_value->json;
+
+    if (!strcmp(path, "")) {
+        update_session_ambr(sess,
+                cJSON_GetObjectItemCaseSensitive(json, "sessionAmbr"),
+                ambr_changed);
+        update_default_qos(sess,
+                cJSON_GetObjectItemCaseSensitive(json, "5gQosProfile"),
+                qos_changed);
+    } else if (!strcmp(path, "/sessionAmbr")) {
+        update_session_ambr(sess, json, ambr_changed);
+    } else if (!strcmp(path, "/5gQosProfile")) {
+        update_default_qos(sess, json, qos_changed);
+    }
+}
+
+/*
+ * TS 23.502 4.3.3.2 step 1b: subscription data change triggers a
+ * network requested PDU Session Modification of the default QoS flow
+ * (Session-AMBR and/or 5QI/ARP).
+ */
+static void modify_session(smf_sess_t *sess, bool ambr_changed)
+{
+    smf_bearer_t *qos_flow = NULL;
+    uint64_t pfcp_flags =
+        OGS_PFCP_MODIFY_NETWORK_REQUESTED|OGS_PFCP_MODIFY_QOS_MODIFY;
+
+    if (!OGS_FSM_CHECK(&sess->sm, smf_gsm_state_operational)) {
+        ogs_warn("[%d] Session not operational; change applied locally",
+                sess->psi);
+        return;
+    }
+
+    qos_flow = smf_default_bearer_in_sess(sess);
+    if (!qos_flow || !qos_flow->qer) {
+        ogs_error("[%d] No default QoS flow", sess->psi);
+        return;
+    }
+
+    memcpy(&qos_flow->qos, &sess->session.qos, sizeof(ogs_qos_t));
+    qos_flow->qer->mbr.uplink = sess->session.ambr.uplink;
+    qos_flow->qer->mbr.downlink = sess->session.ambr.downlink;
+
+    sess->session_ambr_update = ambr_changed;
+
+    ogs_list_init(&sess->qos_flow_to_modify_list);
+    ogs_list_add(&sess->qos_flow_to_modify_list, &qos_flow->to_modify_node);
+
+    ogs_assert(OGS_OK ==
+            smf_5gc_pfcp_send_qos_flow_list_modification_request(
+                sess, NULL,
+                HOME_ROUTED_ROAMING_IN_HSMF(sess) ?
+                    OGS_PFCP_MODIFY_HOME_ROUTED_ROAMING|pfcp_flags :
+                    pfcp_flags, 0));
+}
+
 bool smf_nsmf_callback_handle_sdm_data_change_notify(
     ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg)
 {
     int status = OGS_SBI_HTTP_STATUS_NO_CONTENT;
     smf_ue_t *smf_ue = NULL;
+    smf_sess_t *sess = NULL;
+    uint8_t psi = OGS_NAS_PDU_SESSION_IDENTITY_UNASSIGNED;
 
     ogs_sbi_message_t sendmsg;
     ogs_sbi_response_t *response = NULL;
@@ -2772,11 +2925,31 @@ bool smf_nsmf_callback_handle_sdm_data_change_notify(
         goto cleanup;
     }
 
+    /* Callback: /nsmf-callback/v1/sdmsubscription-notify/{supi}[/{psi}] */
+    if (recvmsg->h.resource.component[2])
+        psi = atoi(recvmsg->h.resource.component[2]);
+
     OpenAPI_list_for_each(ModificationNotification->notify_items, node) {
         OpenAPI_notify_item_t *item = node->data;
         char *saveptr = NULL;
+        char *resource_id = NULL, *p = NULL;
 
-        ueid = ogs_sbi_parse_uri(item->resource_id, "/", &saveptr);
+        if (!item || !item->resource_id) {
+            status = OGS_SBI_HTTP_STATUS_BAD_REQUEST;
+            ogs_error("No resourceId");
+            goto cleanup;
+        }
+
+        /* Accept both "{supi}/sm-data" and the full Nudm_SDM URI */
+        resource_id = item->resource_id;
+        p = strstr(resource_id, "/nudm-sdm/");
+        if (p) {
+            p = strchr(p + strlen("/nudm-sdm/"), '/');
+            if (p)
+                resource_id = p + 1;
+        }
+
+        ueid = ogs_sbi_parse_uri(resource_id, "/", &saveptr);
         if (!ueid) {
             status = OGS_SBI_HTTP_STATUS_BAD_REQUEST;
             ogs_error("[%s] No UeId", item->resource_id);
@@ -2799,15 +2972,30 @@ bool smf_nsmf_callback_handle_sdm_data_change_notify(
 
         SWITCH(res_name)
         CASE(OGS_SBI_RESOURCE_NAME_SM_DATA)
-            OpenAPI_lnode_t *node_ci;
+            ogs_list_for_each(&smf_ue->sess_list, sess) {
+                OpenAPI_lnode_t *node_ci;
+                bool ambr_changed = false, qos_changed = false;
 
-            OpenAPI_list_for_each(item->changes, node_ci) {
-                /*
-                TODO:
-                OpenAPI_change_item_t *change_item = node_ci->data;
-                */
+                if (psi != OGS_NAS_PDU_SESSION_IDENTITY_UNASSIGNED &&
+                    sess->psi != psi)
+                    continue;
+
+                OpenAPI_list_for_each(item->changes, node_ci) {
+                    OpenAPI_change_item_t *change_item = node_ci->data;
+                    if (change_item)
+                        update_sm_data(sess, change_item,
+                                &ambr_changed, &qos_changed);
+                }
+
+                if (ambr_changed || qos_changed) {
+                    ogs_info("[%s:%d] Subscription changed: "
+                            "Session-AMBR[%s] QoS[%s]",
+                            smf_ue->supi, sess->psi,
+                            ambr_changed ? "Y" : "N",
+                            qos_changed ? "Y" : "N");
+                    modify_session(sess, ambr_changed);
+                }
             }
-
             break;
         DEFAULT
             status = OGS_SBI_HTTP_STATUS_BAD_REQUEST;

@@ -20,6 +20,7 @@
 #include "sbi-path.h"
 #include "nnrf-handler.h"
 #include "nudm-handler.h"
+#include "data-change.h"
 
 bool udm_nudm_ueau_handle_get(
     udm_ue_t *udm_ue, ogs_sbi_stream_t *stream, ogs_sbi_message_t *recvmsg)
@@ -730,6 +731,7 @@ bool udm_nudm_sdm_handle_subscription_create(
 
     sdm_subscription->data_change_callback_uri =
         ogs_strdup(SDMSubscription->callback_reference);
+    udm_sdm_subscription_set_monitored(sdm_subscription, SDMSubscription);
 
     server = ogs_sbi_server_from_stream(stream);
     ogs_assert(server);
@@ -755,6 +757,10 @@ bool udm_nudm_sdm_handle_subscription_create(
 
     ogs_free(sendmsg.http.location);
     OpenAPI_sdm_subscription_free(sendmsg.SDMSubscription);
+
+    /* Always refresh: the UDR keeps subscriptions in memory only */
+    if (sdm_subscription->am_data || sdm_subscription->sm_data)
+        udm_nudr_dr_send_subs_to_notify(udm_ue);
 
     return true;
 }

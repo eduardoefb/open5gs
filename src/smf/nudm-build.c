@@ -173,6 +173,7 @@ ogs_sbi_request_t *smf_nudm_sdm_build_subscription(
     uint64_t supported_features = 0;
 
     char *monres = NULL;
+    char psi[4];
 
     ogs_assert(sess);
     ogs_assert(data);
@@ -208,6 +209,8 @@ ogs_sbi_request_t *smf_nudm_sdm_build_subscription(
     header.resource.component[0] =
         (char *)OGS_SBI_RESOURCE_NAME_SDMSUBSCRIPTION_NOTIFY;
     header.resource.component[1] = smf_ue->supi;
+    ogs_snprintf(psi, sizeof(psi), "%d", sess->psi);
+    header.resource.component[2] = psi;
     SDMSubscription.callback_reference = ogs_sbi_server_uri(server, &header);
     if (!SDMSubscription.callback_reference) {
         ogs_error("No callback_reference");

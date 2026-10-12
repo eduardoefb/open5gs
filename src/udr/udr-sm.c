@@ -19,6 +19,7 @@
 
 #include "sbi-path.h"
 #include "nudr-handler.h"
+#include "data-change.h"
 
 void udr_state_initial(ogs_fsm_t *s, udr_event_t *e)
 {
@@ -133,6 +134,13 @@ void udr_state_operational(ogs_fsm_t *s, udr_event_t *e)
         case OpenAPI_service_name_nudr_dr:
             SWITCH(message.h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_SUBSCRIPTION_DATA)
+                if (message.h.resource.component[1] &&
+                    !strcmp(message.h.resource.component[1],
+                        OGS_SBI_RESOURCE_NAME_SUBS_TO_NOTIFY)) {
+                    udr_nudr_dr_handle_subs_to_notify(stream, &message);
+                    break;
+                }
+
                 SWITCH(message.h.resource.component[2])
                 CASE(OGS_SBI_RESOURCE_NAME_AUTHENTICATION_DATA)
                     udr_nudr_dr_handle_subscription_authentication(

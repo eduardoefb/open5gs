@@ -31,6 +31,7 @@ void udr_context_init(void)
 
     /* Initialize UDR context */
     memset(&self, 0, sizeof(udr_context_t));
+    ogs_list_init(&self.subs_list);
 
     ogs_log_install_domain(&__ogs_dbi_domain, "dbi", ogs_core()->log.level);
     ogs_log_install_domain(&__udr_log_domain, "udr", ogs_core()->log.level);
@@ -42,7 +43,80 @@ void udr_context_final(void)
 {
     ogs_assert(context_initialized == 1);
 
+    udr_subs_remove_all();
+
     context_initialized = 0;
+}
+
+udr_subs_t *udr_subs_add(char *ue_id, char *callback_reference)
+{
+    udr_subs_t *subs = NULL;
+    ogs_uuid_t uuid;
+    char id[OGS_UUID_FORMATTED_LENGTH + 1];
+
+    ogs_assert(ue_id);
+    ogs_assert(callback_reference);
+
+    if (ogs_list_count(&self.subs_list) >=
+            ogs_global_conf()->max.ue * OGS_MAX_NUM_OF_SLICE) {
+        ogs_error("Maximum number of subs-to-notify [%d] reached",
+                ogs_list_count(&self.subs_list));
+        return NULL;
+    }
+
+    subs = ogs_calloc(1, sizeof(*subs));
+    ogs_assert(subs);
+
+    ogs_uuid_get(&uuid);
+    ogs_uuid_format(id, &uuid);
+
+    subs->id = ogs_strdup(id);
+    ogs_assert(subs->id);
+    subs->ue_id = ogs_strdup(ue_id);
+    ogs_assert(subs->ue_id);
+    subs->callback_reference = ogs_strdup(callback_reference);
+    ogs_assert(subs->callback_reference);
+
+    ogs_list_add(&self.subs_list, subs);
+
+    return subs;
+}
+
+void udr_subs_remove(udr_subs_t *subs)
+{
+    ogs_assert(subs);
+
+    ogs_list_remove(&self.subs_list, subs);
+
+    ogs_free(subs->id);
+    ogs_free(subs->ue_id);
+    ogs_free(subs->callback_reference);
+    if (subs->snapshot)
+        cJSON_Delete(subs->snapshot);
+
+    ogs_free(subs);
+}
+
+void udr_subs_remove_all(void)
+{
+    udr_subs_t *subs = NULL, *next_subs = NULL;
+
+    ogs_list_for_each_safe(&self.subs_list, next_subs, subs)
+        udr_subs_remove(subs);
+}
+
+udr_subs_t *udr_subs_find_by_id(char *id)
+{
+    udr_subs_t *subs = NULL;
+
+    ogs_assert(id);
+
+    ogs_list_for_each(&self.subs_list, subs) {
+        if (!strcmp(subs->id, id))
+            return subs;
+    }
+
+    return NULL;
 }
 
 udr_context_t *udr_self(void)
