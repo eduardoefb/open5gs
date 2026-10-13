@@ -61,6 +61,57 @@ static ogs_pkbuf_pool_t *packet_pool = NULL;
 
 static void upf_gtp_handle_multicast(ogs_pkbuf_t *recvbuf);
 
+#define UPF_QER_UPLINK      0
+#define UPF_QER_DOWNLINK    1
+
+/* Bucket depth: 100 ms of the MBR, never less than a few full-size packets */
+#define UPF_QER_BURST_USEC  100000
+#define UPF_QER_MIN_BURST   (32 * 1024)
+
+/*
+ * Token bucket on the QER MBR. For the default QoS flow the SMF sets
+ * the MBR to the Session-AMBR (TS 23.501 5.7.2.6), so this enforces
+ * the subscribed session rate. MBR 0 means no limit.
+ */
+static bool upf_qer_mbr_allow(ogs_pfcp_qer_t *qer, int dir, uint32_t len)
+{
+    /* tokens are bit-microseconds (bytes * 8 * 10^6): no rounding loss */
+    uint64_t rate, depth, cost;
+    ogs_time_t now, elapsed;
+
+    if (!qer)
+        return true;
+
+    rate = dir == UPF_QER_UPLINK ? qer->mbr.uplink : qer->mbr.downlink;
+    /* above 1 Tbps the bit-microsecond counters could overflow */
+    if (!rate || rate > 1000000000000ULL)
+        return true;
+
+    depth = rate * UPF_QER_BURST_USEC;
+    if (depth < (uint64_t)UPF_QER_MIN_BURST * 8 * OGS_USEC_PER_SEC)
+        depth = (uint64_t)UPF_QER_MIN_BURST * 8 * OGS_USEC_PER_SEC;
+    cost = (uint64_t)len * 8 * OGS_USEC_PER_SEC;
+
+    now = ogs_get_monotonic_time();
+    elapsed = qer->policer[dir].last ? now - qer->policer[dir].last :
+        OGS_USEC_PER_SEC;
+    if (elapsed > OGS_USEC_PER_SEC)
+        elapsed = OGS_USEC_PER_SEC;
+    qer->policer[dir].last = now;
+
+    if (elapsed > 0) {
+        qer->policer[dir].tokens += rate * (uint64_t)elapsed;
+        if (qer->policer[dir].tokens > depth)
+            qer->policer[dir].tokens = depth;
+    }
+
+    if (qer->policer[dir].tokens < cost)
+        return false;
+
+    qer->policer[dir].tokens -= cost;
+    return true;
+}
+
 static int check_framed_routes(upf_sess_t *sess, int family, uint32_t *addr)
 {
     int i = 0;
@@ -213,6 +264,9 @@ static void _gtpv1_tun_recv_common_one(ogs_socket_t fd, ogs_pkbuf_t *recvbuf, bo
         }
         goto cleanup;
     }
+
+    if (!upf_qer_mbr_allow(pdr->qer, UPF_QER_DOWNLINK, recvbuf->len))
+        goto cleanup;
 
     /* Increment total & dl octets + pkts */
     for (i = 0; i < pdr->num_of_urr; i++)
@@ -741,6 +795,10 @@ static void _gtpv1_u_recv_one(ogs_socket_t fd, ogs_sock_t *sock, ogs_pkbuf_t *pk
 
         }
 
+        if (pdr->src_if == OGS_PFCP_INTERFACE_ACCESS &&
+            !upf_qer_mbr_allow(pdr->qer, UPF_QER_UPLINK, pkbuf->len))
+            goto cleanup;
+
         if (far->dst_if == OGS_PFCP_INTERFACE_CORE &&
             far->dst_if_type_presence == true &&
             far->dst_if_type == OGS_PFCP_3GPP_INTERFACE_TYPE_N6) {
@@ -829,6 +887,10 @@ static void _gtpv1_u_recv_one(ogs_socket_t fd, ogs_sock_t *sock, ogs_pkbuf_t *pk
                     dl_pdr = dl_fallback_pdr;
 
                 if (dl_pdr) {
+                    if (!upf_qer_mbr_allow(dl_pdr->qer, UPF_QER_DOWNLINK,
+                                pkbuf->len))
+                        goto cleanup;
+
                     /* Increment dl octets + pkts */
                     for (i = 0; i < dl_pdr->num_of_urr; i++)
                         upf_sess_urr_acc_add(

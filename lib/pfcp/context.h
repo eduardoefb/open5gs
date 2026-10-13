@@ -312,6 +312,12 @@ typedef struct ogs_pfcp_qer_s {
 
     uint8_t                 qfi;
 
+    /* UPF MBR policer state: [0] uplink, [1] downlink */
+    struct {
+        uint64_t            tokens;     /* bytes */
+        ogs_time_t          last;       /* monotonic usec, 0 = full bucket */
+    } policer[2];
+
     ogs_pfcp_sess_t         *sess;
 } ogs_pfcp_qer_t;
 
